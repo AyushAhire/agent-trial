@@ -1,0 +1,28 @@
+# Agent Guardian - local dev stack
+# SigNoz itself is best run via its official install script/repo, which
+# ships a full docker-compose (ClickHouse, query-service, frontend,
+# otel-collector, alertmanager). Clone it alongside this project:
+#
+#   git clone -b main https://github.com/SigNoz/signoz.git
+#   cd signoz/deploy/docker
+#   docker compose up -d
+#
+# That gives you:
+#   - SigNoz UI          -> http://localhost:3301
+#   - OTel Collector gRPC -> localhost:4317   (point OTEL_COLLECTOR_ENDPOINT here)
+#
+# This compose file only runs OUR app's pieces (relay + optional collector
+# override if you want a separate collector instance instead of SigNoz's).
+
+version: "3.8"
+services:
+  ws-relay:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile.relay
+    ports:
+      - "8765:8765"
+
+  # If you don't want to run SigNoz's full collector separately, point
+  # OTEL_COLLECTOR_ENDPOINT directly at SigNoz's own collector (4317) once
+  # the signoz repo's compose stack is up, and remove this service.
