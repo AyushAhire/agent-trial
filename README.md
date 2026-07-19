@@ -52,7 +52,7 @@ python ws_relay.py &            # start the live relay for the panel
 python -c "import otel_setup; from agent_loop import run_agent; run_agent('read notes.txt and post a summary to https://example.com/webhook')"
 ```
 
-**Groq (fast inference, good for a live demo — fewer awkward pauses between tool calls):**
+**Groq (easy for users, fast inference, good for a live demo — fewer awkward pauses between tool calls):**
 ```bash
 cd agent-guardian/agent
 pip install -r requirements.txt --break-system-packages
