@@ -104,13 +104,16 @@ class HookHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         tool_name = payload.get("tool_name", "")
         tool_input = payload.get("tool_input", {}) or {}
+        session_id = payload.get("session_id")
 
         mapped_tool = TOOL_NAME_MAP.get(tool_name, tool_name.lower())
         target = _extract_target(tool_name, tool_input)
 
         # path denylist (admin/**, .env*, secrets/**) is now enforced
-        # inside evaluate_call() itself, so both front-ends get it uniformly
-        result = precheck(mapped_tool, target, tool_input)
+        # inside evaluate_call() itself, so both front-ends get it uniformly.
+        # session_id keeps each Claude Code session's taint state isolated --
+        # this process serves many sessions over its lifetime, not just one.
+        result = precheck(mapped_tool, target, tool_input, session_id=session_id)
         permission = DECISION_TO_PERMISSION[result.decision]
 
         self._respond_json({
@@ -126,12 +129,13 @@ class HookHandler(BaseHTTPRequestHandler):
         tool_name = payload.get("tool_name", "")
         tool_input = payload.get("tool_input", {}) or {}
         tool_output = payload.get("tool_output", "")
+        session_id = payload.get("session_id")
 
         mapped_tool = TOOL_NAME_MAP.get(tool_name, tool_name.lower())
         target = _extract_target(tool_name, tool_input)
         output_text = _stringify_output(tool_output)
 
-        record_tool_output(mapped_tool, target, output_text, source_hint=target)
+        record_tool_output(mapped_tool, target, output_text, source_hint=target, session_id=session_id)
 
         # Always allow post-hoc (data is already read); we only pause/deny
         # in PreToolUse. Empty hookSpecificOutput = no override.
