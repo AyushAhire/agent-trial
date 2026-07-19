@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Bash",
+        "hooks": [
+          { "type": "http", "url": "http://localhost:8090/hooks/pre-tool-use", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          { "type": "http", "url": "http://localhost:8090/hooks/post-tool-use", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

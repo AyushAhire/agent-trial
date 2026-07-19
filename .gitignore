@@ -1,5 +1,13 @@
 # Dependencies
 frontend/node_modules/
+secrets/test_secret.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude Code local/personal settings (settings.json is project-shared, keep that one)
+.claude/settings.local.json
 
 # Environment files
 .env

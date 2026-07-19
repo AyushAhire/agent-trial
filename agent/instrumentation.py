@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from policy import classify_content, evaluate_call, Decision, Tag
+from policy import classify_content, evaluate_call, Decision, PolicyResult, Tag
 
 tracer = trace.get_tracer("agent-guardian")
 
@@ -104,6 +104,67 @@ def traced_tool_call(tool_name: str, target: str, params: dict):
         yield Ctx()
 
         span.set_attribute("duration_ms", int((time.time() - start) * 1000))
+
+
+def precheck(tool_name: str, target: str, params: dict, override_reason: str = None) -> PolicyResult:
+    """Decision + telemetry only, no execution — for callers that don't run
+    the tool themselves (the Claude Code PreToolUse hook adapter: Claude
+    Code executes the tool after we hand back allow/deny/ask, we never
+    touch the filesystem/shell/network here).
+
+    override_reason: short-circuits straight to BLOCK (used for the hard
+    path denylist in policy.check_path_denylist, which applies regardless
+    of taint state and shouldn't wait on evaluate_call's taint-based rules).
+    """
+    if override_reason:
+        policy_result = PolicyResult(Decision.BLOCK, 100, [override_reason])
+    else:
+        policy_result = evaluate_call(tool_name, target, params, taint_ctx.active_tags)
+
+    with tracer.start_as_current_span(f"tool.{tool_name}") as span:
+        span.set_attribute("tool.name", tool_name)
+        span.set_attribute("tool.target", target)
+        span.set_attribute("tool.params_json", json.dumps(params)[:500])
+        span.set_attribute("data.tags", ",".join(taint_ctx.snapshot()))
+        span.set_attribute("risk.score", policy_result.risk_score)
+        span.set_attribute("policy.decision", policy_result.decision.value)
+        span.set_attribute("policy.reasons", ",".join(policy_result.reasons))
+        span.set_attribute("session.id", taint_ctx.session_id)
+        span.set_attribute("source", "claude_code_hook")
+
+        if policy_result.decision == Decision.BLOCK:
+            span.set_status(Status(StatusCode.ERROR, "blocked_by_policy"))
+            span.add_event("policy.flag_raised", {"reasons": ",".join(policy_result.reasons)})
+
+        broadcast({
+            "type": "tool_call",
+            "session_id": taint_ctx.session_id,
+            "tool": tool_name,
+            "target": target,
+            "tags": taint_ctx.snapshot(),
+            "risk_score": policy_result.risk_score,
+            "decision": policy_result.decision.value,
+            "reasons": policy_result.reasons,
+            "ts": time.time(),
+            "source": "claude_code",
+        })
+
+    return policy_result
+
+
+def record_confirm_resolution(tool_name: str, target: str, approved: bool):
+    """A pending_confirm decision doesn't end at evaluate_call() anymore --
+    a human resolves it (see tools.py's _gate). Broadcast the actual
+    outcome so the panel/telemetry stream reflects what really happened,
+    not just the pre-human-input pause."""
+    broadcast({
+        "type": "confirm_resolution",
+        "session_id": taint_ctx.session_id,
+        "tool": tool_name,
+        "target": target,
+        "decision": "allow" if approved else "block",
+        "ts": time.time(),
+    })
 
 
 def record_tool_output(tool_name: str, target: str, output_text: str, source_hint: str = ""):

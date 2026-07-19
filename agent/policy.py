@@ -7,6 +7,7 @@ Responsibilities:
 2. Decide whether a tool call should be allowed/blocked/paused (evaluate_call)
 """
 
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -51,6 +52,54 @@ ALLOWLISTED_DOMAINS = {
     "internal.local",
     "api.your-own-service.com",  # placeholder: swap for your real internal API host
 }
+
+# Hard path denylist for the Claude Code integration (Feature F, PRD 4.3):
+# admin codebase, env files, and secrets are off-limits regardless of taint
+# state. "dir/**" matches any path with that directory as a path component;
+# a bare glob (no "/") matches against the filename only.
+DENY_PATH_PATTERNS = [
+    "admin/**",
+    ".env*",
+    "secrets/**",
+]
+
+
+def check_path_denylist(path: str):
+    """Return a reason string if `path` matches a hard-denylisted pattern,
+    else None. Works for both absolute and relative paths."""
+    if not path:
+        return None
+    parts = [p for p in path.replace("\\", "/").split("/") if p]
+    basename = parts[-1] if parts else path
+
+    for pattern in DENY_PATH_PATTERNS:
+        if pattern.endswith("/**"):
+            dirname = pattern[:-3]
+            if dirname in parts[:-1]:
+                return f"path_denylist:{pattern}"
+        elif fnmatch.fnmatch(basename, pattern):
+            return f"path_denylist:{pattern}"
+    return None
+
+
+# Catches a denylisted path being referenced INSIDE a shell command (cat,
+# grep, find, sed, ...) rather than passed as a tool's own file-path
+# argument. Without this, "Read .env" gets denied but "grep ... .env" via
+# run_shell sails through evaluate_call() with the same effective outcome
+# (found via live testing: Claude Code fell back to `grep`/`find` on .env
+# after a direct Read was denied, and that path wasn't covered).
+DENY_COMMAND_TOKEN_RE = re.compile(r"(?:^|[\s'\"/])(\.env\S*|admin/|secrets/)", re.I)
+
+
+def check_command_denylist(command: str):
+    """Return a reason string if a shell command string references a
+    denylisted path anywhere in it, else None."""
+    if not command:
+        return None
+    match = DENY_COMMAND_TOKEN_RE.search(command)
+    if match:
+        return f"path_denylist:shell_reference:{match.group(1)}"
+    return None
 
 
 @dataclass
@@ -109,6 +158,13 @@ def evaluate_call(tool_name: str, target: str, params: dict, inherited_tags: set
     # 1. Dangerous shell patterns -> always block regardless of taint
     if tool_name == "run_shell" and DANGEROUS_SHELL_RE.search(target):
         return PolicyResult(Decision.BLOCK, 100, ["dangerous_shell_pattern"])
+
+    # 1b. Shell command referencing a denylisted path (cat/grep/find on
+    # .env/admin/secrets) -> block, same as a direct Read/Edit/Write would be.
+    if tool_name == "run_shell":
+        command_reason = check_command_denylist(target)
+        if command_reason:
+            return PolicyResult(Decision.BLOCK, 100, [command_reason])
 
     # 2. Secret data leaving the boundary -> always block
     if Tag.SECRET in inherited_tags and tool_name in ("call_api", "write_file") and _is_external(target):

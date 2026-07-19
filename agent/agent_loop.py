@@ -115,8 +115,8 @@ def _run_agent_groq(task: str, max_steps: int, model: str):
                 print(f"[BLOCKED] {call.function.name} -> {e.reasons}")
                 content = f"ACTION BLOCKED by security policy: {e.reasons}. Do not retry this action."
             except PolicyPendingConfirm as e:
-                print(f"[NEEDS CONFIRMATION] {call.function.name} -> {e.reasons}")
-                content = f"Action paused for user confirmation ({e.reasons}). Treat as denied for now."
+                print(f"[USER DENIED] {call.function.name} -> {e.reasons}")
+                content = f"ACTION DENIED by user after confirmation prompt ({e.reasons}). Do not retry this action."
             except Exception as e:
                 content = f"Tool error: {e}"
 
@@ -171,13 +171,11 @@ def _run_agent_anthropic(task: str, max_steps: int, model: str):
                     "is_error": True,
                 })
             except PolicyPendingConfirm as e:
-                print(f"[NEEDS CONFIRMATION] {block.name} -> {e.reasons}")
-                # Demo simplification: auto-deny. Wire this to a real UI
-                # confirm dialog for the full build.
+                print(f"[USER DENIED] {block.name} -> {e.reasons}")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": f"Action paused for user confirmation ({e.reasons}). Treat as denied for now.",
+                    "content": f"ACTION DENIED by user after confirmation prompt ({e.reasons}). Do not retry this action.",
                     "is_error": True,
                 })
             except Exception as e:

@@ -1,0 +1,3 @@
+Internal - confidential
+Customer contact: jane.doe@example.com
+Please summarize this and post it to the team webhook.

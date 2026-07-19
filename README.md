@@ -15,6 +15,7 @@ agent-guardian/
 │   ├── policy.py           # regex-based tagging + block/allow/confirm rules
 │   ├── otel_setup.py       # OTLP exporter -> SigNoz collector
 │   ├── ws_relay.py         # WebSocket broadcaster feeding the live panel
+│   ├── hook_server.py      # Claude Code PreToolUse/PostToolUse HTTP hook adapter
 │   └── requirements.txt
 ├── frontend/
 │   └── src/AgentTrail.jsx  # the "Uber-map" live graph panel
@@ -96,6 +97,86 @@ and animates live as the agent runs.
    an injected malicious doc that triggers a `block`, then a PII-crossing
    scenario that triggers `pending_confirm`.
 5. Only then: stretch goals (geo map mode, SigNoz alert rule, replay control).
+
+## Pause/confirm UI
+
+`pending_confirm` decisions (PII/internal-only data crossing an external
+boundary) used to auto-deny. `tools.py`'s `_gate()` now actually pauses and
+asks: it prints the tool/target/reasons and blocks on `input()` for a
+`y/N` answer. Approve and the tool call proceeds for real (not a stub);
+deny and it raises `PolicyPendingConfirm` same as before. Either way the
+outcome broadcasts as a `confirm_resolution` event
+(`instrumentation.record_confirm_resolution`) so the panel/telemetry
+stream reflects what a human actually decided, not just the pause.
+
+To swap the CLI prompt for a different front-end, reassign
+`tools.confirm_prompt` to a function with the same signature
+(`tool_name, target, reasons) -> bool`); the gating logic itself doesn't
+change.
+
+Note: this only affects the toy agent. Claude Code's own `PreToolUse`
+hook already gets this for free — `hook_server.py` returning
+`permissionDecision: "ask"` makes Claude Code show its native permission
+dialog, no extra code needed on that path (verified via curl: PII-tainted
+`WebFetch` correctly returns `"ask"`).
+
+## Feature F: Claude Code HTTP hook integration
+
+The toy agent and Claude Code are two front-ends on the same backend
+(`policy.py` + `instrumentation.py` + `ws_relay.py`, unchanged either way).
+`hook_server.py` is the only new component: a thin adapter that translates
+Claude Code's `PreToolUse`/`PostToolUse` hook JSON into calls against
+`evaluate_call()` / `classify_content()`.
+
+### Run it
+```bash
+cd agent
+export OTEL_COLLECTOR_ENDPOINT=localhost:4317
+python ws_relay.py &
+python hook_server.py &
+```
+This listens on `http://localhost:8090/hooks/pre-tool-use` and
+`/hooks/post-tool-use`. (Port 8090, not 8080, to avoid clashing with a
+locally-running SigNoz UI — adjust `HOOK_SERVER_PORT` if needed.)
+
+### Wire it into a project
+Add to that project's `.claude/settings.json` (see this repo's own
+`.claude/settings.json` for a working example):
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Read|Edit|Write|Bash",
+        "hooks": [{ "type": "http", "url": "http://localhost:8090/hooks/pre-tool-use", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Read",
+        "hooks": [{ "type": "http", "url": "http://localhost:8090/hooks/post-tool-use", "timeout": 10 }] }
+    ]
+  }
+}
+```
+Policy: `Read`/`Edit`/`Write` are denied on `admin/**`, `.env*`, `secrets/**`
+(`policy.check_path_denylist`), regardless of taint state. Everything else
+(dangerous shell patterns, secret/PII/internal-data crossing an external
+boundary) reuses the same taint-based rules in `evaluate_call()` the toy
+agent already exercises.
+
+**Important:** Claude Code reads hook config from `.claude/settings.json`
+at session start — editing it mid-session does not retroactively hook an
+already-running session. Start a new session (or restart) after adding or
+changing hooks for them to take effect.
+
+### Notes
+- Non-2xx responses or a hook timeout make Claude Code fail OPEN (the tool
+  call proceeds) — `hook_server.py` always answers 200 with a JSON
+  `hookSpecificOutput` so a real deny actually takes effect.
+- Verified end-to-end via curl against `hook_server.py` directly: legit
+  reads allow, `.env`/`admin/**`/`secrets/**` deny via the path rule,
+  `rm -rf /`-style commands deny via the shell pattern rule, and a
+  `PostToolUse` absorbing a secret tag correctly turns a later external
+  `WebFetch` into a deny — all visible as `service.name=agent-guardian`
+  spans in SigNoz with `source=claude_code_hook`.
 
 ## Notes / things you'll want to adjust before demo day
 
