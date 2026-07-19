@@ -1,0 +1,10 @@
+# Dependencies
+frontend/node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Production notes
+agenttrail-prd-v2.md
