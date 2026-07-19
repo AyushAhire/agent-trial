@@ -1,5 +1,5 @@
 """
-Agent Guardian - Tool Executors
+AgentTrail - Tool Executors
 Every tool goes through traced_tool_call() so nothing bypasses
 instrumentation + policy enforcement.
 """

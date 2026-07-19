@@ -1,5 +1,5 @@
 """
-Agent Guardian - Instrumentation Middleware
+AgentTrail - Instrumentation Middleware
 
 Wraps every tool call in an OTel span, tags/propagates taint via span
 attributes (baggage-style manual propagation kept simple for hackathon

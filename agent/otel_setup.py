@@ -1,5 +1,5 @@
 """
-Agent Guardian - OTel bootstrap
+AgentTrail - OTel bootstrap
 Import this once at the top of your entrypoint (before agent_loop runs)
 to send spans to a local OTel Collector -> SigNoz.
 """

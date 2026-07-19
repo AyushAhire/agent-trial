@@ -1,4 +1,4 @@
-# Agent Guardian — MVP Skeleton
+# AgentTrail — MVP Skeleton
 
 Matches PRD Section 9 ("Must-have" build order). This gets you an
 end-to-end path: agent loop → instrumented tool calls → taint tagging →
@@ -7,7 +7,7 @@ policy engine → SigNoz + live Agent Trail panel.
 ## What's here
 
 ```
-agent-guardian/
+agenttrail/
 ├── agent/
 │   ├── agent_loop.py       # ReAct loop, calls Claude with tool schemas
 │   ├── tools.py            # read_file / write_file / run_shell / call_api
@@ -47,7 +47,7 @@ Two LLM backends are supported, switch via `LLM_BACKEND`:
 
 **Anthropic (default):**
 ```bash
-cd agent-guardian/agent
+cd agent
 pip install -r requirements.txt --break-system-packages   # if on a managed-env system
 export ANTHROPIC_API_KEY=sk-...
 export OTEL_COLLECTOR_ENDPOINT=localhost:4317
@@ -58,7 +58,7 @@ python -c "import otel_setup; from agent_loop import run_agent; run_agent('read 
 
 **Groq (fast inference, good for a live demo — fewer awkward pauses between tool calls):**
 ```bash
-cd agent-guardian/agent
+cd agent
 pip install -r requirements.txt --break-system-packages
 export LLM_BACKEND=groq
 export GROQ_API_KEY=gsk_...
@@ -81,7 +81,7 @@ model instead — pass it as `run_agent(task, model="...")`.
 
 ### 3. Agent Trail panel (frontend)
 ```bash
-cd agent-guardian/frontend
+cd frontend
 npm install
 npm start
 ```

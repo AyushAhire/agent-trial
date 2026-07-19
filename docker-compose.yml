@@ -1,4 +1,4 @@
-# Agent Guardian - local dev stack
+# AgentTrail - local dev stack
 # SigNoz itself is best run via its official install script/repo, which
 # ships a full docker-compose (ClickHouse, query-service, frontend,
 # otel-collector, alertmanager). Clone it alongside this project:

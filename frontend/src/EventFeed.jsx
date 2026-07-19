@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 
 /**
  * Chronological event feed -- the default AgentTrail view. Replaces the
@@ -6,17 +6,63 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
  * to read "what happened, in order, and did anything need my attention"
  * at a glance, not decode node layout.
  *
+ * Events are grouped into per-session incident cards rather than shown
+ * as a flat list: a single agent run can fire many events in under a
+ * second (e.g. a prompt-injection attempt that gets blocked 3 different
+ * ways), and a flat list makes that read as noise instead of one story.
+ * Anything non-clean (a block, a pending confirm, or an allowed-but-
+ * flagged call) auto-expands; clean sessions stay collapsed.
+ *
  * Also owns the pause/confirm back-channel: a `confirm_request` event
  * pins a banner with Approve/Deny buttons here. Clicking POSTs the
  * decision to the relay's /confirm-response endpoint, which the paused
  * tool call (tools.py's _web_confirm, polling /confirm-status) picks up.
  */
 
-const DECISION_COLOR = {
-  allow: "#22c55e",
-  pending_confirm: "#eab308",
-  block: "#ef4444",
+function decisionColor(event) {
+  if (event.decision === "block") return "#ef4444";
+  if (event.decision === "pending_confirm") return "#eab308";
+  if (event.decision === "allow" && (event.risk_score || 0) > 0) return "#f97316"; // allowed but flagged -- don't let it hide next to a clean allow
+  if (event.decision === "allow") return "#22c55e";
+  return "#475569";
+}
+
+const SEVERITY_META = {
+  critical: { color: "#ef4444", icon: "🔴" },
+  warning: { color: "#eab308", icon: "🟡" },
+  flagged: { color: "#f97316", icon: "🟠" },
+  clean: { color: "#22c55e", icon: "🟢" },
 };
+
+function groupBySession(events) {
+  const bySession = new Map();
+  for (const e of events) {
+    const sid = e.session_id || "unknown";
+    if (!bySession.has(sid)) bySession.set(sid, []);
+    bySession.get(sid).push(e);
+  }
+  const sessions = Array.from(bySession.entries()).map(([sessionId, evts]) => {
+    const blocked = evts.filter((e) => e.decision === "block").length;
+    const asked = evts.filter((e) => e.decision === "pending_confirm").length;
+    const flagged = evts.filter((e) => e.decision === "allow" && (e.risk_score || 0) > 0).length;
+    let severity = "clean";
+    if (blocked > 0) severity = "critical";
+    else if (asked > 0) severity = "warning";
+    else if (flagged > 0) severity = "flagged";
+    return {
+      sessionId,
+      events: evts,
+      blocked,
+      asked,
+      flagged,
+      severity,
+      total: evts.length,
+      lastTs: Math.max(...evts.map((e) => e.ts || 0)),
+    };
+  });
+  sessions.sort((a, b) => b.lastTs - a.lastTs);
+  return sessions;
+}
 
 const RELAY_HTTP_BASE = "http://localhost:8766";
 const MAX_EVENTS = 150;
@@ -25,8 +71,15 @@ export default function EventFeed({ wsUrl = "ws://localhost:8765" }) {
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]); // confirm_request events awaiting a decision
   const [connected, setConnected] = useState(false);
-  const [expandedKey, setExpandedKey] = useState(null);
+  const [expandedKey, setExpandedKey] = useState(null); // expanded individual event row (raw JSON), scoped within an expanded session
+  const [sessionOverrides, setSessionOverrides] = useState({}); // sessionId -> explicit expand/collapse, overrides the severity-based default
   const wsRef = useRef();
+
+  const sessions = useMemo(() => groupBySession(events), [events]);
+
+  const toggleSession = useCallback((sessionId, currentEffective) => {
+    setSessionOverrides((prev) => ({ ...prev, [sessionId]: !currentEffective }));
+  }, []);
 
   useEffect(() => {
     const ws = new WebSocket(wsUrl);
@@ -104,26 +157,79 @@ export default function EventFeed({ wsUrl = "ws://localhost:8765" }) {
             Waiting for events — run the toy agent or trigger a Claude Code hook.
           </div>
         )}
-        {events.map((event) => (
-          <EventRow
-            key={event._key}
-            event={event}
-            expanded={expandedKey === event._key}
-            onToggle={() => setExpandedKey(expandedKey === event._key ? null : event._key)}
-          />
-        ))}
+        {sessions.map((session) => {
+          const defaultExpanded = session.severity !== "clean";
+          const effectiveExpanded = sessionOverrides.hasOwnProperty(session.sessionId)
+            ? sessionOverrides[session.sessionId]
+            : defaultExpanded;
+          return (
+            <SessionCard
+              key={session.sessionId}
+              session={session}
+              expanded={effectiveExpanded}
+              onToggle={() => toggleSession(session.sessionId, effectiveExpanded)}
+              expandedEventKey={expandedKey}
+              onToggleEvent={(key) => setExpandedKey(expandedKey === key ? null : key)}
+            />
+          );
+        })}
       </div>
     </div>
   );
 }
 
+function SessionCard({ session, expanded, onToggle, expandedEventKey, onToggleEvent }) {
+  const meta = SEVERITY_META[session.severity];
+  const parts = [];
+  if (session.blocked) parts.push(`${session.blocked} blocked`);
+  if (session.asked) parts.push(`${session.asked} needs confirmation`);
+  if (session.flagged) parts.push(`${session.flagged} flagged`);
+  if (parts.length === 0) parts.push("all clean");
+
+  const orderedEvents = [...session.events].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+  return (
+    <div style={{ marginBottom: 6, border: `1px solid ${meta.color}55`, borderRadius: 6, overflow: "hidden" }}>
+      <div
+        onClick={onToggle}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#111827", cursor: "pointer", borderLeft: `4px solid ${meta.color}` }}
+      >
+        <div style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+          <span style={{ flexShrink: 0 }}>{expanded ? "▾" : "▸"}</span>
+          <span style={{ flexShrink: 0 }}>{meta.icon}</span>
+          <span style={{ fontWeight: 600, flexShrink: 0 }}>{parts.join(", ")}</span>
+          <span style={{ opacity: 0.5, flexShrink: 0 }}>
+            · {session.total} event{session.total !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, opacity: 0.5, flexShrink: 0, marginLeft: 12 }}>
+          {session.sessionId.slice(0, 8)} · {new Date(session.lastTs * 1000).toLocaleTimeString()}
+        </div>
+      </div>
+      {expanded && (
+        <div style={{ padding: 8, background: "#0b1220" }}>
+          {orderedEvents.map((event) => (
+            <EventRow
+              key={event._key}
+              event={event}
+              expanded={expandedEventKey === event._key}
+              onToggle={() => onToggleEvent(event._key)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EventRow({ event, expanded, onToggle }) {
-  const color = DECISION_COLOR[event.decision] || "#475569";
+  const color = decisionColor(event);
   const time = event.ts ? new Date(event.ts * 1000).toLocaleTimeString() : "";
 
   let title, detail;
   if (event.type === "tool_call") {
-    title = `${event.tool} → ${event.decision}`;
+    const flagged = event.decision === "allow" && (event.risk_score || 0) > 0;
+    title = `${event.tool} → ${event.decision}${flagged ? " (flagged)" : ""}`;
     detail = event.reasons && event.reasons.length ? event.reasons.join(", ") : null;
   } else if (event.type === "taint_update") {
     title = `${event.tool} tagged data`;

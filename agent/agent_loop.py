@@ -1,5 +1,5 @@
 """
-Agent Guardian - Minimal Agent Loop
+AgentTrail - Minimal Agent Loop
 A small ReAct-style loop using native tool-calling. Built from scratch,
 no agent framework, so every tool call is guaranteed to pass through
 our instrumentation/policy layer (tools.py) with nothing bypassing it.
@@ -87,7 +87,7 @@ def _run_agent_groq(task: str, max_steps: int, model: str):
         base_url="https://api.groq.com/openai/v1",
     )
     messages = [{"role": "user", "content": task}]
-    print(f"\n=== Agent Guardian session start (groq/{model}) ===\nTask: {task}\n")
+    print(f"\n=== AgentTrail session start (groq/{model}) ===\nTask: {task}\n")
 
     for step in range(max_steps):
         response = client.chat.completions.create(
@@ -131,7 +131,7 @@ def _run_agent_anthropic(task: str, max_steps: int, model: str):
 
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     messages = [{"role": "user", "content": task}]
-    print(f"\n=== Agent Guardian session start ===\nTask: {task}\n")
+    print(f"\n=== AgentTrail session start ===\nTask: {task}\n")
 
     for step in range(max_steps):
         response = client.messages.create(

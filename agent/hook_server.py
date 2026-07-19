@@ -26,7 +26,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from instrumentation import precheck, record_tool_output
-from policy import Decision, check_path_denylist
+from policy import Decision
 
 # Claude Code tool name -> our internal tool vocabulary (matches the
 # vocab evaluate_call() already understands from the toy agent).
@@ -54,8 +54,6 @@ DECISION_TO_PERMISSION = {
     Decision.BLOCK: "deny",
     Decision.PENDING_CONFIRM: "ask",
 }
-
-PATH_CHECKED_TOOLS = {"read_file", "write_file"}
 
 
 def _extract_target(tool_name: str, tool_input: dict) -> str:
@@ -110,11 +108,9 @@ class HookHandler(BaseHTTPRequestHandler):
         mapped_tool = TOOL_NAME_MAP.get(tool_name, tool_name.lower())
         target = _extract_target(tool_name, tool_input)
 
-        override_reason = None
-        if mapped_tool in PATH_CHECKED_TOOLS:
-            override_reason = check_path_denylist(target)
-
-        result = precheck(mapped_tool, target, tool_input, override_reason=override_reason)
+        # path denylist (admin/**, .env*, secrets/**) is now enforced
+        # inside evaluate_call() itself, so both front-ends get it uniformly
+        result = precheck(mapped_tool, target, tool_input)
         permission = DECISION_TO_PERMISSION[result.decision]
 
         self._respond_json({

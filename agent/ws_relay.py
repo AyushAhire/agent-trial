@@ -1,5 +1,5 @@
 """
-Agent Guardian - WebSocket Relay
+AgentTrail - WebSocket Relay
 Two roles in one process:
   1. WebSocket server on :8765 -> the Agent Trail frontend connects here
      to receive live events.

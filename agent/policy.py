@@ -1,5 +1,5 @@
 """
-Agent Guardian - Policy & Detection Engine
+AgentTrail - Policy & Detection Engine
 Rule-based (no ML) so it's reliable under demo conditions.
 
 Responsibilities:
@@ -35,7 +35,7 @@ PHONE_RE = re.compile(r"\b(\+?\d{1,3}[-.\s]?)?\(?\d{3,4}\)?[-.\s]?\d{3,4}[-.\s]?
 # Common secret-shaped tokens: API keys, bearer tokens, AWS-style keys, generic hex/base64 secrets
 SECRET_RE = re.compile(
     r"(sk-[a-zA-Z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z\-_]{35}|"
-    r"ghp_[a-zA-Z0-9]{20,}|Bearer\s+[a-zA-Z0-9\-_\.]{20,}|"
+    r"ghp_[a-zA-Z0-9]{20,}|gsk_[a-zA-Z0-9]{20,}|Bearer\s+[a-zA-Z0-9\-_\.]{20,}|"
     r"[a-fA-F0-9]{32,}|-----BEGIN [A-Z ]+PRIVATE KEY-----)"
 )
 INTERNAL_MARKER_RE = re.compile(r"(confidential|internal[\s\-]?use[\s\-]?only|do not distribute)", re.I)
@@ -154,6 +154,16 @@ def evaluate_call(tool_name: str, target: str, params: dict, inherited_tags: set
     """
     reasons = []
     risk = 0
+
+    # 0. Hard path denylist (admin/**, .env*, secrets/**) for direct file
+    # access -> block regardless of taint. Mirrors the Claude Code hook's
+    # path rule (policy.check_path_denylist) so both front-ends get the
+    # same protection -- found via live testing that the toy agent could
+    # read .env directly with zero resistance while Claude Code couldn't.
+    if tool_name in ("read_file", "write_file"):
+        path_reason = check_path_denylist(target)
+        if path_reason:
+            return PolicyResult(Decision.BLOCK, 100, [path_reason])
 
     # 1. Dangerous shell patterns -> always block regardless of taint
     if tool_name == "run_shell" and DANGEROUS_SHELL_RE.search(target):
