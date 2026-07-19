@@ -177,23 +177,31 @@ def evaluate_call(tool_name: str, target: str, params: dict, inherited_tags: set
             return PolicyResult(Decision.BLOCK, 100, [command_reason])
 
     # 2. Secret data leaving the boundary -> always block
-    if Tag.SECRET in inherited_tags and tool_name in ("call_api", "write_file") and _is_external(target):
+    # (call_api only: write_file's target is always a LOCAL filesystem path
+    # in this codebase -- tools.py's write_file is a plain open(path, "w"),
+    # never a network destination. _is_external() misclassified every local
+    # path -- relative or absolute -- as "external" since it was written for
+    # URLs, so write_file used to trigger these on every single call,
+    # including a false BLOCK on a harmless local save whenever taint was
+    # active. Found via live testing: routine writes kept showing up
+    # "flagged" for no real reason.)
+    if Tag.SECRET in inherited_tags and tool_name == "call_api" and _is_external(target):
         return PolicyResult(Decision.BLOCK, 95, ["secret_data_exfil_attempt"])
 
     # 3. PII crossing the boundary -> pause for confirmation
-    if Tag.PII in inherited_tags and tool_name in ("call_api", "write_file") and _is_external(target):
+    if Tag.PII in inherited_tags and tool_name == "call_api" and _is_external(target):
         reasons.append("pii_crossing_trust_boundary")
         risk = max(risk, 70)
         return PolicyResult(Decision.PENDING_CONFIRM, risk, reasons)
 
     # 4. Internal-only data leaving the boundary -> pause for confirmation
-    if Tag.INTERNAL_ONLY in inherited_tags and tool_name in ("call_api", "write_file") and _is_external(target):
+    if Tag.INTERNAL_ONLY in inherited_tags and tool_name == "call_api" and _is_external(target):
         reasons.append("internal_data_crossing_trust_boundary")
         risk = max(risk, 60)
         return PolicyResult(Decision.PENDING_CONFIRM, risk, reasons)
 
     # 5. Baseline: new/unrecognized external domain, no taint -> allow but flag low risk
-    if tool_name in ("call_api", "write_file") and _is_external(target):
+    if tool_name == "call_api" and _is_external(target):
         reasons.append("external_destination_untainted")
         risk = 20
 

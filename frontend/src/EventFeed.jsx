@@ -153,9 +153,27 @@ function groupBySession(events) {
 
 const RELAY_HTTP_BASE = "http://localhost:8766";
 const MAX_EVENTS = 150;
+const STORAGE_KEY = "agenttrail_events_v1";
+
+// Stable per-event identity (not Math.random()): needed so a page refresh
+// (restored from localStorage) and the relay's replay-on-connect buffer
+// don't produce two copies of the same event when both land at once.
+function eventIdentity(event) {
+  return `${event.ts}|${event.type}|${event.tool}|${event.target}`;
+}
+
+function loadStoredEvents() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function EventFeed({ wsUrl = "ws://localhost:8765" }) {
-  const [events, setEvents] = useState([]);
+  const [events, setEvents] = useState(loadStoredEvents);
   const [pending, setPending] = useState([]);
   const [connected, setConnected] = useState(false);
   const [expandedKey, setExpandedKey] = useState(null);
@@ -170,6 +188,18 @@ export default function EventFeed({ wsUrl = "ws://localhost:8765" }) {
     const t = setInterval(() => forceTick((n) => n + 1), 30000);
     return () => clearInterval(t);
   }, []);
+
+  // persist to localStorage so a page refresh (or the relay restarting)
+  // doesn't wipe the feed -- the relay's own replay buffer covers a fresh
+  // tab/reconnect; this covers surviving a reload without even needing
+  // that round trip
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+    } catch {
+      // storage full/unavailable -- history just won't persist, not fatal
+    }
+  }, [events]);
 
   useEffect(() => {
     const ws = new WebSocket(wsUrl);
@@ -186,7 +216,11 @@ export default function EventFeed({ wsUrl = "ws://localhost:8765" }) {
       if (event.type === "confirm_resolution") {
         setPending((prev) => prev.filter((p) => !(p.tool === event.tool && p.target === event.target)));
       }
-      setEvents((prev) => [{ ...event, _key: `${event.ts}-${event.tool}-${Math.random()}` }, ...prev].slice(0, MAX_EVENTS));
+      const key = eventIdentity(event);
+      setEvents((prev) => {
+        if (prev.some((e) => e._key === key)) return prev; // relay's replay buffer resent something localStorage already had
+        return [{ ...event, _key: key }, ...prev].slice(0, MAX_EVENTS);
+      });
     };
     return () => ws.close();
   }, [wsUrl]);

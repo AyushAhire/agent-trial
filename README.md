@@ -101,6 +101,39 @@ and animates live as the agent runs.
    scenario that triggers `pending_confirm`.
 5. Only then: stretch goals (geo map mode, SigNoz alert rule, replay control).
 
+## Event history (replay + persistence)
+
+Two complementary fixes for "the panel wasn't open yet so I missed it"
+(which really happened during testing -- a real block never showed up
+because the tab connected after the event fired):
+
+1. **Server-side replay buffer** (`ws_relay.py`): the relay keeps the last
+   ~500 events in memory and replays them to any newly-connecting client
+   before it joins the live stream. Fixes a fresh tab, a reconnect, or a
+   second viewer seeing nothing from before they connected.
+2. **Client-side localStorage cache** (`EventFeed.jsx`): the browser tab
+   persists what it's seen, so a page refresh restores instantly even if
+   the relay process itself restarted. Events use a stable identity
+   (`ts|type|tool|target`) instead of a random key so the two mechanisms
+   overlapping doesn't produce duplicates.
+
+## Known false-positive fixed: `_is_external()` and `write_file`
+
+`evaluate_call()`'s taint-crossing-boundary rules (secret/PII/internal-only
+leaving the system) used to check `tool_name in ("call_api", "write_file")`.
+`_is_external()` was written for URLs (it hostname-parses the target), and
+every local filesystem path -- relative or absolute -- doesn't have a real
+hostname, so it always evaluated as "external." Since `write_file`'s target
+in this codebase is *always* a local path (`tools.py`'s `write_file` is a
+plain `open(path, "w")`, never a network call), this meant **every single
+write_file call was flagged**, and worse, a write_file while SECRET/PII/
+internal-only taint was active would get incorrectly BLOCKED as if a local
+file save were data leaving the trust boundary. Fixed by restricting those
+rules to `call_api` only, which is the one tool that actually crosses the
+network. Verified: local writes are clean again, tainted writes no longer
+false-block, and the real protection (`call_api` + secret taint -> block)
+still fires exactly as before.
+
 ## Pause/confirm UI
 
 `pending_confirm` decisions (PII/internal-only data crossing an external

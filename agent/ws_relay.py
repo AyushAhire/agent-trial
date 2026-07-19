@@ -13,12 +13,17 @@ shared across processes, so a direct import + function call silently
 no-ops. HTTP POST is the simplest reliable way to get an event from
 one process into another without extra dependencies.
 
+A new connection (fresh tab, reconnect, second viewer) is replayed the
+last ~500 events before joining the live stream -- see _HISTORY -- so
+"the panel wasn't open yet" no longer means an event is gone for good.
+
 Run standalone: `python ws_relay.py`
   -> ws://localhost:8765  (frontend connects here)
   -> http://localhost:8766/event  (agent process POSTs here)
 """
 
 import asyncio
+import collections
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,10 +42,24 @@ _LOOP = None
 _PENDING_CONFIRMS = {}
 _PENDING_LOCK = threading.Lock()
 
+# Replay buffer: a client that connects late (a fresh tab, a reconnect
+# after a dropped socket, a second viewer) used to see NOTHING before it
+# connected -- broadcast() is fire-and-forget with no memory. Keep the
+# last N events here and replay them to each new connection before it
+# starts receiving live ones, so "the panel wasn't open yet" stops being
+# a way to silently miss a block. Capped, not unbounded -- this is a
+# recent-history buffer, not a database.
+_HISTORY = collections.deque(maxlen=500)
+_HISTORY_LOCK = threading.Lock()
+
 
 async def _handler(websocket):
     _CONNECTED.add(websocket)
     try:
+        with _HISTORY_LOCK:
+            backlog = list(_HISTORY)
+        for event in backlog:
+            await websocket.send(json.dumps(event))
         async for _ in websocket:
             pass  # panel doesn't send anything back in the MVP
     finally:
@@ -57,6 +76,8 @@ async def _broadcast_async(event: dict):
 def push_event(event: dict):
     """Thread-safe entrypoint. Called from within THIS process only
     (the HTTP handler below runs in a thread inside this same process)."""
+    with _HISTORY_LOCK:
+        _HISTORY.append(event)
     if _LOOP is None:
         return
     asyncio.run_coroutine_threadsafe(_broadcast_async(event), _LOOP)
