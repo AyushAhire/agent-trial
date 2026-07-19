@@ -21,12 +21,21 @@ Run standalone: `python ws_relay.py`
 import asyncio
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 import websockets
 
 _CONNECTED = set()
 _LOOP = None
+
+# Back-channel for the pause/confirm UI: the panel can't reach into the
+# agent process directly (separate process, same as the event broadcast
+# problem instrumentation.py's docstring describes), so a confirm decision
+# is staged here and the agent side polls for it. Guarded by a lock since
+# the HTTP ingest handler runs in its own thread pool.
+_PENDING_CONFIRMS = {}
+_PENDING_LOCK = threading.Lock()
 
 
 async def _handler(websocket):
@@ -54,28 +63,72 @@ def push_event(event: dict):
 
 
 class _IngestHandler(BaseHTTPRequestHandler):
+    def _cors_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _respond_json(self, obj: dict, status: int = 200):
+        data = json.dumps(obj).encode()
+        self.send_response(status)
+        self._cors_headers()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors_headers()
+        self.end_headers()
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/confirm-status":
+            self._respond_json({"error": "not found"}, 404)
+            return
+        confirm_id = parse_qs(parsed.query).get("id", [None])[0]
+        with _PENDING_LOCK:
+            if confirm_id in _PENDING_CONFIRMS:
+                approved = _PENDING_CONFIRMS.pop(confirm_id)
+                self._respond_json({"resolved": True, "approved": approved})
+            else:
+                self._respond_json({"resolved": False})
+
     def do_POST(self):
+        if self.path == "/confirm-response":
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(body)
+                confirm_id = payload["id"]
+                with _PENDING_LOCK:
+                    _PENDING_CONFIRMS[confirm_id] = bool(payload["approved"])
+                self._respond_json({"status": "ok"})
+            except Exception as e:
+                print(f"[relay] bad confirm-response: {e}")
+                self._respond_json({"error": str(e)}, 400)
+            return
+
         if self.path != "/event":
-            self.send_response(404)
-            self.end_headers()
+            self._respond_json({"error": "not found"}, 404)
             return
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         try:
             event = json.loads(body)
             push_event(event)
-            self.send_response(200)
+            self._respond_json({"status": "ok"})
         except Exception as e:
             print(f"[relay] bad event: {e}")
-            self.send_response(400)
-        self.end_headers()
+            self._respond_json({"error": str(e)}, 400)
 
     def log_message(self, format, *args):
         pass  # quiet; the console is busy enough during a demo
 
 
 def _run_http_ingest():
-    server = HTTPServer(("localhost", 8766), _IngestHandler)
+    server = ThreadingHTTPServer(("localhost", 8766), _IngestHandler)
     print("Agent Trail ingest listening on http://localhost:8766/event")
     server.serve_forever()
 

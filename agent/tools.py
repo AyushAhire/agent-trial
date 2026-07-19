@@ -4,11 +4,17 @@ Every tool goes through traced_tool_call() so nothing bypasses
 instrumentation + policy enforcement.
 """
 
+import json
 import subprocess
+import time
+import urllib.error
 import urllib.request
+import uuid
 
-from instrumentation import traced_tool_call, record_tool_output, record_confirm_resolution
+from instrumentation import traced_tool_call, record_tool_output, record_confirm_resolution, taint_ctx, broadcast
 from policy import Decision
+
+CONFIRM_STATUS_URL = "http://localhost:8766/confirm-status"
 
 
 class PolicyBlocked(Exception):
@@ -24,18 +30,57 @@ class PolicyPendingConfirm(Exception):
 
 
 def _cli_confirm(tool_name: str, target: str, reasons: list) -> bool:
-    """Default pause/confirm UI: ask the human running the terminal.
-    Swap this out (assign a different function to tools.confirm_prompt)
-    for a non-CLI front-end (e.g. wiring it to the AgentTrail panel)."""
+    """Fallback pause/confirm UI: ask the human running the terminal.
+    Used when the AgentTrail panel/relay isn't reachable."""
     print(f"\n⚠️  CONFIRMATION NEEDED: {tool_name} -> {target}")
     print(f"    reasons: {', '.join(reasons)}")
     resp = input("    Allow this action? [y/N]: ").strip().lower()
     return resp == "y"
 
 
-# Swappable so a different front-end (e.g. a web prompt) can replace the
-# CLI y/n prompt without touching the gating logic below.
-confirm_prompt = _cli_confirm
+def _web_confirm(tool_name: str, target: str, reasons: list, timeout: float = 120.0) -> bool:
+    """Default pause/confirm UI: broadcast a confirm_request event (the
+    AgentTrail panel shows it as a banner with Approve/Deny buttons) and
+    poll the relay for the panel's decision. Falls back to the CLI prompt
+    if the relay/panel isn't reachable at all, so the toy agent still
+    works standalone without the panel running."""
+    confirm_id = str(uuid.uuid4())
+    broadcast({
+        "type": "confirm_request",
+        "id": confirm_id,
+        "session_id": taint_ctx.session_id,
+        "tool": tool_name,
+        "target": target,
+        "reasons": reasons,
+        "ts": time.time(),
+    })
+
+    print(f"\n⚠️  CONFIRMATION NEEDED: {tool_name} -> {target} (reasons: {', '.join(reasons)})")
+    print(f"    Waiting for Approve/Deny in the AgentTrail panel ({timeout:.0f}s timeout)...")
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"{CONFIRM_STATUS_URL}?id={confirm_id}", timeout=3) as resp:
+                data = json.loads(resp.read())
+        except (urllib.error.URLError, OSError):
+            print("    panel/relay not reachable -- falling back to terminal prompt")
+            return _cli_confirm(tool_name, target, reasons)
+
+        if data.get("resolved"):
+            approved = bool(data.get("approved"))
+            print(f"    -> {'APPROVED' if approved else 'DENIED'} via panel")
+            return approved
+        time.sleep(1)
+
+    print("    timed out waiting for a decision -- defaulting to DENY")
+    return False
+
+
+# Swappable so a different front-end can replace this without touching
+# the gating logic below (assign a different function to
+# tools.confirm_prompt with the same signature).
+confirm_prompt = _web_confirm
 
 
 def _gate(decision, reasons, tool_name: str = "", target: str = ""):

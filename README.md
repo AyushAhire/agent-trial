@@ -16,9 +16,12 @@ agent-guardian/
 │   ├── otel_setup.py       # OTLP exporter -> SigNoz collector
 │   ├── ws_relay.py         # WebSocket broadcaster feeding the live panel
 │   ├── hook_server.py      # Claude Code PreToolUse/PostToolUse HTTP hook adapter
+│   ├── alert_webhook_receiver.py  # local receiver for testing SigNoz alert rules
 │   └── requirements.txt
 ├── frontend/
-│   └── src/AgentTrail.jsx  # the "Uber-map" live graph panel
+│   └── src/
+│       ├── EventFeed.jsx   # default view: chronological event log + confirm banner
+│       └── AgentTrail.jsx  # the "Uber-map" live graph panel (secondary tab)
 ├── docker-compose.yml
 └── README.md (this file)
 ```
@@ -101,24 +104,47 @@ and animates live as the agent runs.
 ## Pause/confirm UI
 
 `pending_confirm` decisions (PII/internal-only data crossing an external
-boundary) used to auto-deny. `tools.py`'s `_gate()` now actually pauses and
-asks: it prints the tool/target/reasons and blocks on `input()` for a
-`y/N` answer. Approve and the tool call proceeds for real (not a stub);
-deny and it raises `PolicyPendingConfirm` same as before. Either way the
-outcome broadcasts as a `confirm_resolution` event
-(`instrumentation.record_confirm_resolution`) so the panel/telemetry
-stream reflects what a human actually decided, not just the pause.
+boundary) used to auto-deny. Now there's a real Approve/Deny flow in the
+**Feed** tab (the default view):
 
-To swap the CLI prompt for a different front-end, reassign
-`tools.confirm_prompt` to a function with the same signature
-(`tool_name, target, reasons) -> bool`); the gating logic itself doesn't
-change.
+1. `tools.py`'s `_gate()` broadcasts a `confirm_request` event (with a
+   unique id) instead of raising immediately, then polls
+   `ws_relay.py`'s new `/confirm-status` endpoint.
+2. `EventFeed.jsx` shows it as a banner at the top with Approve/Deny
+   buttons; clicking POSTs the decision to `ws_relay.py`'s new
+   `/confirm-response` endpoint.
+3. The poll picks up the decision (or times out after 120s and defaults
+   to deny) and the tool call actually proceeds or raises
+   `PolicyPendingConfirm`, same as before. Either way the outcome
+   broadcasts as a `confirm_resolution` event so the feed reflects what
+   a human actually decided.
+4. If the relay/panel isn't reachable at all, it falls back to a `y/N`
+   terminal prompt (`tools._cli_confirm`) so the toy agent still works
+   standalone.
+
+Verified end-to-end with a real headless browser (Playwright): a live
+`pending_confirm` triggered a real banner, clicking Approve/Deny in the
+actual rendered page resolved the agent-side poll and the tool either
+executed for real or raised the denial, for both outcomes.
 
 Note: this only affects the toy agent. Claude Code's own `PreToolUse`
 hook already gets this for free — `hook_server.py` returning
 `permissionDecision: "ask"` makes Claude Code show its native permission
 dialog, no extra code needed on that path (verified via curl: PII-tainted
 `WebFetch` correctly returns `"ask"`).
+
+## Event Feed (default panel view)
+
+`EventFeed.jsx` replaced the force-graph as the default view — a
+security-review workflow wants "what happened, in order, and does
+anything need my attention," which a chronological, color-coded log
+communicates far more directly than a node graph. The graph
+(`AgentTrail.jsx`) is still there under the **Graph** tab if you want it
+for demo flair; nothing about it changed.
+
+Click any row to expand it (▸/▾ indicator) and see full details: session
+id, risk score, ISO timestamp, and the raw event JSON — not just the
+one-line summary.
 
 ## Feature F: Claude Code HTTP hook integration
 
